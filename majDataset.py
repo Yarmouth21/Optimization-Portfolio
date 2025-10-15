@@ -2,6 +2,8 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_squared_error
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize
 
 # --- 1️⃣ Chargement et préparation des données ---
 data = pd.read_csv("CAC40_20actions_50mois.csv", sep=';', header=0)
@@ -33,70 +35,62 @@ y_train, y_test = y.iloc[:-test_size], y.iloc[-test_size:]
 model = RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42)
 model.fit(X_train, y_train)
 
-# --- 6️⃣ Prédiction action par action ---
+# --- 6️⃣ Prédiction ---
 y_pred = model.predict(X_test)
 y_pred_df = pd.DataFrame(y_pred, index=y_test.index, columns=y_test.columns)
 
-# --- 7️⃣ Évaluation globale ---
+# --- 7️⃣ Évaluation ---
 r2 = r2_score(y_test, y_pred)
 rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-
 print("✅ Score R² :", round(r2, 4))
 print("✅ RMSE :", round(rmse, 5))
 
-# --- 8️⃣ Affichage prédictions par action ---
-print("\n📈 Prédictions action par action pour les 5 derniers trimestres :")
-print(y_pred_df)
-
-
-import matplotlib.pyplot as plt
-
-# Choisir 5 actions à visualiser
+# --- 8️⃣ Visualisation ---
 actions = ['AIR.PA', 'AI.PA', 'BN.PA', 'CAP.PA', 'ACA.PA']
-
 fig, axes = plt.subplots(5, 1, figsize=(12, 15), sharex=True)
-
 for i, action in enumerate(actions):
     axes[i].plot(y_test.index, y_test[action], label='Rendement réel', marker='o')
     axes[i].plot(y_test.index, y_pred_df[action], label='Rendement prédit', marker='x')
     axes[i].set_title(f'Prédiction vs Réel pour {action}')
-    axes[i].set_ylabel('Rendement trimestriel')
     axes[i].legend()
     axes[i].grid(True)
-
-plt.xlabel('Date')
 plt.tight_layout()
 plt.show()
 
-from scipy.optimize import minimize
-
-# Récupérer les rendements prédits du dernier trimestre
+# --- 9️⃣ Sélection des meilleures actions ---
 dernier_pred = y_pred_df.iloc[-1]
-
-# Sélectionner les 5 actions avec les rendements prédits les plus élevés
 top5_actions = dernier_pred.sort_values(ascending=False).head(5)
 rendements = top5_actions.values
 
-# Fonction objectif : -rendement attendu (on maximise)
+# --- 🔟 Calcul de la matrice de covariance (sur l'historique récent) ---
+# Ici, on prend les 250 derniers jours des rendements réels
+cov_matrix = returns[top5_actions.index].iloc[-250:].cov().values
+
+# --- 1️⃣1️⃣ Optimisation moyenne-variance ---
+# Paramètre de risque (plus grand = plus aversion au risque)
+lambda_risque = 5.0  
+
+# Fonction objectif : - (rendement attendu - λ * risque)
 def objectif(poids):
-    return -np.dot(poids, rendements)
+    rendement_portefeuille = np.dot(poids, rendements)
+    variance_portefeuille = np.dot(poids.T, np.dot(cov_matrix, poids))
+    return -(rendement_portefeuille - lambda_risque * variance_portefeuille)
 
-# Contraintes : somme des poids = 1
+# Contraintes et bornes
 contraintes = {'type': 'eq', 'fun': lambda x: np.sum(x) - 1}
-
-# Bornes : minimum 5%, maximum 30% par action
 bornes = [(0.05, 0.30) for _ in range(len(top5_actions))]
-
-# Initialisation : poids égaux
-x0 = np.array([1/len(top5_actions)]*len(top5_actions))
+x0 = np.array([1/len(top5_actions)] * len(top5_actions))
 
 # Optimisation
 result = minimize(objectif, x0, bounds=bornes, constraints=contraintes)
-
 poids_opt = result.x
+
+# --- 1️⃣2️⃣ Résultats ---
 portefeuille_opt = pd.Series(poids_opt, index=top5_actions.index)
 rendement_portefeuille = np.dot(poids_opt, rendements)
+risque_portefeuille = np.sqrt(np.dot(poids_opt.T, np.dot(cov_matrix, poids_opt)))
 
-print("📈 Portefeuille optimisé avec 5%-30% par action :")
+print("\n📈 Portefeuille optimisé (moyenne-variance) :")
 print(portefeuille_opt)
-print("\n🔹 Rendement attendu :", rendement_portefeuille)
+print("\n🔹 Rendement attendu :", round(rendement_portefeuille, 5))
+print("🔹 Risque (écart-type du portefeuille) :", round(risque_portefeuille, 5))
